@@ -32,7 +32,7 @@ int main(void)
 			    estado = (estado == ENCENDIDO) ? APAGADO : ENCENDIDO;
 				anterior = 1;
 			} 
-		else {
+		} else {
 			//No se registro btn presionado, reseteo		
 			anterior = 0;
 		}
