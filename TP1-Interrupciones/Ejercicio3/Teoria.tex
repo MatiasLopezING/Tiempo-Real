@@ -1,0 +1,171 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{parskip}
+
+\geometry{margin=2.5cm}
+
+\lstdefinestyle{avr}{
+    language=C,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{gray}\itshape,
+    stringstyle=\color{teal},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    frame=single,
+    breaklines=true,
+    tabsize=4,
+    showstringspaces=false,
+}
+
+\title{Ejercicio 3 --- Análisis Teórico\\
+\large Trabajo Práctico 1: Interrupciones y ADC por Polling}
+\author{Sistemas de Tiempo Real}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+% =====================================================================
+\section{Parámetros Temporales y Frecuencias}
+% =====================================================================
+
+\subsection{Prescaler del ADC}
+
+El datasheet del ATmega328P especifica que el reloj del ADC ($F_{ADC}$) debe
+estar comprendido entre 50~kHz y 200~kHz para garantizar los 10~bits de
+resolución. Con un cristal de 16~MHz ($F_{CPU}$) se selecciona un prescaler de
+128 (\texttt{ADPS2:0 = 111}):
+
+\[
+    F_{ADC} = \frac{F_{CPU}}{\text{Prescaler}} = \frac{16\,000\,000}{128} = 125\text{ kHz}
+\]
+
+El valor de 125~kHz se ubica en el centro del rango admisible, maximizando el
+margen de tolerancia frente a variaciones de tensión o temperatura.
+
+\subsection{Tiempo de Conversión}
+
+Una conversión normal (posterior a la primera) toma exactamente 13 ciclos de
+reloj del ADC:
+
+\[
+    T_{conv} = 13 \cdot \frac{1}{F_{ADC}} = 13 \cdot \frac{1}{125\,000} = 104\;\mu\text{s}
+\]
+
+Durante este intervalo la CPU permanece en espera activa (\emph{polling}),
+bloqueada hasta que el ADC levante la bandera \texttt{ADIF}.
+
+\subsection{Resolución Analógica}
+
+Con referencia de tensión $V_{REF} = 5$~V y convertidor de $n = 10$~bits:
+
+\[
+    \text{Resolución} = \frac{V_{REF}}{2^{n}} = \frac{5\text{ V}}{1024} \approx 4{,}88\text{ mV por bit}
+\]
+
+% =====================================================================
+\section{Análisis del Código}
+% =====================================================================
+
+\subsection{Polling de bandera (\texttt{adc\_read})}
+
+El enunciado requiere explícitamente \emph{consulta de bandera (polling)}. La
+implementación utiliza espera activa:
+
+\begin{lstlisting}[style=avr]
+while (!(ADCSRA & (1 << ADIF)));
+ADCSRA |= (1 << ADIF);
+\end{lstlisting}
+
+La espera activa es aceptable en este contexto porque el sistema es
+\emph{bare-metal} de lazo único: no existe otra tarea bloqueada durante los
+104~µs de conversión. El comportamiento es completamente determinista.
+
+La bandera \texttt{ADIF} sigue la convención \textbf{Clear-on-Write-1} de la
+arquitectura AVR: se limpia escribiendo un \texttt{1} lógico sobre el bit.
+
+\subsection{Atomicidad en la lectura (\texttt{adc\_init} y lectura)}
+
+Al configurar \texttt{ADLAR = 0} mediante:
+
+\begin{lstlisting}[style=avr]
+ADMUX = (1 << REFS0);
+\end{lstlisting}
+
+los 10 bits de resultado quedan alineados a la derecha en los registros
+\texttt{ADCL}/\texttt{ADCH}. La instrucción \texttt{return ADC;} garantiza
+atomicidad: el compilador AVR-GCC lee primero \texttt{ADCL} (lo que bloquea
+por hardware la actualización del par de registros) y luego \texttt{ADCH},
+asegurando la integridad del dato de 16~bits.
+
+% =====================================================================
+\section{Multiplexado y Tiempos de Latching}
+% =====================================================================
+
+\subsection{Manipulación a nivel de bits}
+
+Para separar los nibbles destinados a cada latch 74LS373:
+
+\begin{lstlisting}[style=avr]
+uint8_t byte_alto = (uint8_t)((valor >> 8) & 0x0F);
+uint8_t byte_bajo = (uint8_t)(valor & 0xFF);
+\end{lstlisting}
+
+\begin{itemize}
+    \item \textbf{Desplazamiento (\texttt{>> 8}):} mueve los dos bits más
+          significativos del resultado de 10~bits a las posiciones 0 y~1.
+    \item \textbf{Enmascaramiento (\texttt{\& 0x0F}):} fuerza a cero los cuatro
+          bits altos del byte, evitando activar pines no deseados del
+          \texttt{PORTB} conectados a hardware externo.
+\end{itemize}
+
+\subsection{Tiempos de latch (Setup y Hold Time)}
+
+\begin{lstlisting}[style=avr]
+PORTC |= (1 << PORTC2);   // LE alto
+_delay_us(5);
+PORTC &= ~(1 << PORTC2);  // LE bajo
+\end{lstlisting}
+
+El retardo de 5~µs no es arbitrario: cumple el \emph{Pulse Width} mínimo y el
+\emph{Data Setup Time} especificados en el datasheet del 74LS373. Si el
+microcontrolador conmutara la señal \texttt{LE} a la frecuencia del sistema
+($\approx 62{,}5$~ns por ciclo), las compuertas TTL no alcanzarían a
+estabilizarse, dando lugar a capturas erróneas por capacitancia parásita.
+
+% =====================================================================
+\section{Período de Muestreo}
+% =====================================================================
+
+El lazo principal incluye \texttt{\_delay\_ms(50)}. El período real de cada
+iteración es la suma de todas las operaciones:
+
+\[
+    T_{ciclo} = T_{conv}(104\;\mu\text{s})
+              + T_{latch\,alto}(5\;\mu\text{s})
+              + T_{latch\,bajo}(5\;\mu\text{s})
+              + 50\text{ ms}
+              + t_{overhead}
+\]
+
+El retardo de 50~ms fija una tasa de refresco de 20~Hz, suficiente para la
+persistencia visual del ojo humano sin generar \emph{aliasing} perceptible en
+el display de 7~segmentos.
+
+La implementación mediante \texttt{while(1)} con retardo bloqueante introduce
+\emph{jitter} inherente. Para un sistema de tiempo real estricto se debería
+emplear un temporizador por interrupción; sin embargo, el enunciado requiere
+explícitamente el modo de muestreo por bucle y consulta de bandera, y la
+tolerancia de una interfaz humana acepta dicha fluctuación.
+
+\end{document}
