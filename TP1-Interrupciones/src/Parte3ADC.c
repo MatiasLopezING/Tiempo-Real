@@ -66,7 +66,6 @@ int main(void) {
     while (1) {
         uint16_t valor_adc = adc_read();
         display_hex(valor_adc);
-        _delay_ms(50); // Muestreo periódico cada 50 ms
     }
 
     return 0;
