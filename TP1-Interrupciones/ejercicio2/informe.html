@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Práctica 1 - Ejercicio 2: Decisiones de Diseño</title>
+<style>
+  body { font-family: "Segoe UI", Arial, sans-serif; line-height: 1.6; margin: 40px; color: #111; }
+  h1 { font-size: 22px; text-align: center; margin-bottom: 5px; }
+  h2 { font-size: 16px; text-align: center; color: #555; margin-top: 0; }
+  h3 { font-size: 16px; border-bottom: 2px solid #333; padding-bottom: 4px; margin-top: 25px; }
+  h4 { font-size: 14px; margin-top: 15px; margin-bottom: 5px; color: #004488; }
+  table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
+  th, td { border: 1px solid #ccc; padding: 8px 10px; text-align: left; }
+  th { background-color: #f2f2f2; }
+  code { background: #f4f4f4; padding: 2px 4px; font-family: Consolas, monospace; font-size: 13px; }
+  .formula { background: #f9f9f9; padding: 8px 12px; border-left: 3px solid #0066cc; font-family: Consolas, monospace; margin: 8px 0; }
+  ul, ol { margin-top: 5px; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Práctica 1 — Ejercicio 2: Temporización por Hardware (Timer0)</h1>
+<h2>Decisiones de Diseño y Arquitectura de Firmware</h2>
+
+<h3>1. Introducción y Requerimientos</h3>
+<p>El objetivo consiste en reestructurar el control de entradas y salidas digitales implementado mediante bucles bloqueantes (<code>_delay_ms</code>), migrando hacia una arquitectura gobernada por interrupciones de hardware utilizando el módulo <strong>Timer0</strong> del ATmega328P.</p>
+<ul>
+  <li><strong>Estado inicial:</strong> Ambos LEDs en <code>PB0</code> y <code>PB1</code> totalmente encendidos.</li>
+  <li><strong>Entrada:</strong> Pulsadores en <code>PD2</code> y <code>PD3</code> con pull-ups internas habilitadas.</li>
+  <li><strong>Comportamiento:</strong> Al detectar pulsación, parpadeo alternado estricto de 250 ms por estado.</li>
+  <li><strong>Condición técnica:</strong> Temporización controlada por hardware sin demoras por software.</li>
+</ul>
+
+<h3>2. Decisiones de Diseño</h3>
+
+<h4>A. Modo CTC frente a Modo Normal</h4>
+<p>Se seleccionó el modo <strong>CTC (Clear Timer on Compare Match)</strong> con el comparador <code>OCR0A</code> en lugar del desbordamiento normal (Overflow):</p>
+<ul>
+  <li>El modo normal cuenta libremente hasta 255 (256 ciclos). A 16 MHz no genera múltiplos enteros exactos de 1 ms, acumulando error temporal con cada interrupción.</li>
+  <li>El modo CTC reinicia el contador a cero por hardware de forma exacta al igualar el valor de <code>OCR0A</code>, sin requerir recargas por software dentro de la ISR.</li>
+</ul>
+
+<h4>B. Base de Tiempo Exacta de 1 ms</h4>
+<p>Para lograr 250 ms precisos, se configuró una interrupción patrón de 1 ms:</p>
+<div class="formula">
+  f_timer = 16 MHz / 64 = 250 kHz &rarr; Período (tick) = 1 / 250 kHz = 4 &micro;s<br>
+  Cuentas requeridas = 1000 &micro;s / 4 &micro;s = 250 ciclos<br>
+  OCR0A = 250 - 1 = 249
+</div>
+<p>Dentro de la ISR (<code>TIMER0_COMPA_vect</code>), un acumulador cuenta 250 interrupciones de 1 ms para completar los <strong>250 ms exactos</strong>.</p>
+
+<h4>C. Calificador volatile</h4>
+<p>Las variables globales compartidas entre el flujo principal y la interrupción (<code>modo</code>, <code>ticks_ms</code>, <code>toggle</code>) se declararon como <code>volatile</code> para impedir que el compilador optimice sus lecturas en registros internos de la CPU, asegurando acceso sincrónico a la SRAM.</p>
+
+<h3>3. Comparativa Arquitectónica</h3>
+<table>
+  <thead>
+    <tr>
+      <th>Parámetro</th>
+      <th>Ejercicio 1 (Polling + Delays)</th>
+      <th>Ejercicio 2 (Timer0 + ISR)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Uso de CPU</strong></td>
+      <td>Bloqueada continuamente en el bucle <code>_delay_ms(250)</code>.</td>
+      <td>100% libre en el <code>while(1)</code> para atender eventos o modo sleep.</td>
+    </tr>
+    <tr>
+      <td><strong>Latencia de pulsadores</strong></td>
+      <td>Alta (hasta 250 ms); puede omitir pulsaciones cortas.</td>
+      <td>Inmediata (&lt; 1 &micro;s); respuesta instantánea al presionar.</td>
+    </tr>
+    <tr>
+      <td><strong>Precisión temporal</strong></td>
+      <td>Degradada por tiempo de ejecución de instrucciones adicionales.</td>
+      <td>Precisión fija gobernada por el cristal de 16 MHz.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>4. Verificación en Proteus 8</h3>
+<ul>
+  <li>El campo <strong>Clock Frequency</strong> del microcontrolador debe configurarse en <code>16MHz</code> para que la escala de tiempos coincida con <code>F_CPU</code>.</li>
+  <li>La conmutación de los pines <code>PB0</code> y <code>PB1</code> debe contrastarse contra la barra inferior <strong>Simulation Time</strong>, confirmando que cada cambio de estado toma exactamente 0.250 s de tiempo simulado.</li>
+</ul>
+
+</body>
+</html>
