@@ -16,6 +16,7 @@
  * El analisis y la verificacion estan en Ejercicio4-Justificacion.pdf.
  */
 
+#include <Arduino.h>
 #include <Arduino_FreeRTOS.h>
 #include <semphr.h>
 
