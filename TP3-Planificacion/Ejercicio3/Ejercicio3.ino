@@ -131,7 +131,7 @@ void setup()
     xTaskCreate(vTareaPeriodica, tareas[i].nombre, 192,
                 (void *)&tareas[i], PRIO_PERIODICAS, NULL);
 
-  xTaskCreate(vReporte, "REP", 192, NULL, PRIO_REPORTE, NULL);
+  xTaskCreate(vReporte, "REP", 256, NULL, PRIO_REPORTE, NULL);
 }
 
 void loop() { }
