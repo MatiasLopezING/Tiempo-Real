@@ -17,8 +17,8 @@
  *   periodicas. Por eso:
  *
  *     - El reloj es `tiempo_ms`, que avanza 1 por cada milisegundo de CPU
- *       realmente consumido. La tarea de sistema consume el tiempo ocioso de
- *       forma calibrada, asi que la suma mide tiempo real.
+ *       realmente consumido. La tarea Idle consume el tiempo ocioso de la
+ *       misma forma, asi que la suma mide tiempo real.
  *     - El cuanto de Round Robin lo produce la propia tarea con taskYIELD(),
  *       que termina en vTaskSwitchContext() y rota la lista de listos igual
  *       que lo haria el tick.
@@ -39,8 +39,31 @@
 
 /* ---------------- parametros del experimento --------------------------- */
 
-/* 1 = Ejercicio 4 (Round Robin)   0 = Ejercicio 5 (FIFO, rafagas atomicas) */
-#define USAR_ROUND_ROBIN   1
+/* 1 = Ejercicio 4 (Round Robin)   0 = Ejercicio 5 (FIFO, rafagas atomicas)
+ *
+ * Tiene que coincidir con configUSE_TIME_SLICING de FreeRTOSConfig.h, que es
+ * el parametro que el enunciado pide configurar en la biblioteca:
+ *
+ *   "Configuracion del planificador: en el archivo FreeRTOSConfig.h de la
+ *    biblioteca, configUSE_PREEMPTION debe estar habilitado;
+ *    configUSE_TIME_SLICING determina si el reparto entre tareas de igual
+ *    prioridad es por Round Robin (1) o por FIFO (0)."
+ *
+ * El #error de mas abajo impide compilar si las dos quedan desacopladas. */
+#define USAR_ROUND_ROBIN   0
+
+/* 1 = el cuanto lo fuerza la tarea con taskYIELD() al cerrar cada tramo.
+ * 0 = el cuanto queda a cargo del reparto por tiempo del nucleo, o sea de la
+ *     interrupcion del tick, que es el camino que describe el enunciado.
+ *
+ * Con 0 el firmware queda exactamente como lo plantea la practica y sirve
+ * para reproducir la medicion del Ejercicio 3: en Proteus la interrupcion del
+ * perro guardian no llega mientras una tarea consume CPU, de modo que el
+ * nucleo no rota y el cronograma de Round Robin sale igual al de FIFO. Con 1
+ * la rotacion ocurre y el cuanto se puede medir. El mecanismo es el mismo en
+ * los dos casos: taskYIELD() termina en vTaskSwitchContext(), que es la misma
+ * funcion que invoca el tick.                                              */
+#define CUANTO_POR_TAREA   1
 
 #define MS_POR_UNIDAD      64     /* 1 unidad del enunciado = 4 ticks = 64 ms */
 #define QUANTUM_MS         16     /* cuanto = 1 periodo de tick nominal       */
@@ -48,6 +71,15 @@
 
 #define PRIO_PERIODICAS     2
 #define PILA_PERIODICA    144
+
+#define MASCARA_PINES  ((uint8_t)(_BV(PB0) | _BV(PB1) | _BV(PB2) | _BV(PB3)))
+
+#if USAR_ROUND_ROBIN != configUSE_TIME_SLICING
+#error "USAR_ROUND_ROBIN y configUSE_TIME_SLICING (FreeRTOSConfig.h) no coinciden"
+#endif
+#if configUSE_PREEMPTION != 1
+#error "El enunciado pide configUSE_PREEMPTION habilitado"
+#endif
 
 /* ---------------- reloj de tiempo real ---------------------------------
  * _delay_loop_2 consume exactamente 4 ciclos por iteracion, de modo que cada
@@ -76,29 +108,6 @@ static uint32_t ahora(void)
   return v;
 }
 
-/* ---------------- cronograma en texto -----------------------------------
- * Registra los tramos de ejecucion en RAM y los imprime una sola vez por la
- * terminal, cuando la traza se lleno. Da la misma informacion que el
- * analizador logico pero con los instantes en ms, sin depender de la
- * configuracion del instrumento.
- * Cada evento ocupa 2 bytes: 3 bits de codigo (0..3 = arranca la tarea i,
- * 4..7 = termina la tarea i-4) y 13 bits de instante, hasta 8191 ms.
- * El codigo lleva la tarea tambien en el cierre porque en modo FIFO una
- * tarea desplazada no baja su pin, de modo que su tramo puede solaparse con
- * el de otra y no alcanza con suponer una sola tarea por vez.            */
-#define TRAZA_N  64                 /* 64 eventos = 32 tramos de ejecucion */
-static uint16_t traza_ev[TRAZA_N];
-static uint8_t  traza_n = 0;
-
-static uint32_t ahora(void);
-
-static void traza(uint8_t code)
-{
-  if (traza_n < TRAZA_N)
-    traza_ev[traza_n++] = (uint16_t)(((uint16_t)code << 13)
-                                     | (uint16_t)(ahora() & 0x1FFF));
-}
-
 /* ---------------- RAM libre (diagnostico) ------------------------------- */
 static int ram_libre(void)
 {
@@ -118,6 +127,7 @@ typedef struct {
   uint32_t     prox_ms;      /* instante teorico de la proxima activacion */
   uint32_t     act_ms;       /* instante teorico de la activacion en curso*/
   uint8_t      pendiente;    /* 1 = tiene una activacion sin terminar     */
+  volatile uint8_t ejecutando; /* 1 = esta dentro de su rafaga de computo */
   uint16_t     activaciones;
   uint16_t     perdidos;     /* plazos perdidos (D = T)                   */
   uint16_t     resp_max;     /* tiempo de respuesta maximo, en ms         */
@@ -127,17 +137,83 @@ typedef struct {
 
 /* Conjunto del Ejercicio 1: A(2,12) B(2,24) C(2,6) D(1,3), en unidades. */
 static tarea_t tareas[] = {
-  { "A", PB0,  2 * MS_POR_UNIDAD, 12 * MS_POR_UNIDAD, NULL, 0, 0, 0, 0, 0, 0, 0, 0 },
-  { "B", PB1,  2 * MS_POR_UNIDAD, 24 * MS_POR_UNIDAD, NULL, 0, 0, 0, 0, 0, 0, 0, 0 },
-  { "C", PB2,  2 * MS_POR_UNIDAD,  6 * MS_POR_UNIDAD, NULL, 0, 0, 0, 0, 0, 0, 0, 0 },
-  { "D", PB3,  1 * MS_POR_UNIDAD,  3 * MS_POR_UNIDAD, NULL, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { "A", PB0,  2 * MS_POR_UNIDAD, 12 * MS_POR_UNIDAD, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { "B", PB1,  2 * MS_POR_UNIDAD, 24 * MS_POR_UNIDAD, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { "C", PB2,  2 * MS_POR_UNIDAD,  6 * MS_POR_UNIDAD, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { "D", PB3,  1 * MS_POR_UNIDAD,  3 * MS_POR_UNIDAD, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
 };
 #define N_TAREAS (sizeof(tareas) / sizeof(tareas[0]))
 
+/* ---------------- instrumentacion: la maneja el nucleo ------------------
+ * Los pines y el cronograma NO los escribe la tarea. Los escribe el gancho
+ * traceTASK_SWITCHED_IN(), que el nucleo invoca dentro de
+ * vTaskSwitchContext() justo despues de elegir la proxima tarea. El gancho se
+ * define desde platformio.ini, aprovechando que la biblioteca lo deja vacio
+ * detras de un #ifndef (ver include/traza_switch.h).
+ *
+ * POR QUE. En la version anterior cada tarea levantaba su pin al empezar la
+ * rafaga y lo bajaba al terminarla. El problema es que una tarea no controla
+ * el instante en que PIERDE el procesador: configUSE_TIME_SLICING sigue
+ * valiendo 1 y la interrupcion del perro guardian puede rotar la lista de
+ * listos en medio de una rafaga. La tarea desplazada se quedaba con el pin en
+ * alto mientras otra ejecutaba, y el analizador mostraba dos canales en alto
+ * a la vez. Como en Round Robin las cuatro tareas estan listas practicamente
+ * todo el tiempo, eso pasaba seguido y el cronograma salia sucio.
+ *
+ * Ahora el nibble bajo de PORTB se escribe ENTERO en cada cambio de contexto,
+ * con las interrupciones deshabilitadas. Hay exactamente un canal en alto, el
+ * de la tarea que tiene el procesador, o ninguno si lo tiene la tarea Idle.
+ * La superposicion es imposible por construccion.
+ *
+ * El flag `ejecutando` distingue "la tarea tiene el procesador" de "la tarea
+ * esta ejecutando su rafaga": sin el, el pin tambien subiria en el instante
+ * en que la tarea es elegida solo para volver a bloquearse en
+ * ulTaskNotifyTake(), lo que ensucia la captura con pulsos de microsegundos.
+ *
+ * Cronograma en texto: un evento por cada cambio de dueno del procesador.
+ * Cada tramo termina donde empieza el siguiente, de modo que el texto no
+ * puede solaparse mas de lo que se solapan los pines, o sea nunca.        */
+#define TRAZA_N     64              /* 64 cambios de contexto, 128 bytes */
+#define TRAZA_OCIO  N_TAREAS        /* 4 = ninguna periodica en la CPU   */
+
+static volatile uint16_t traza_ev[TRAZA_N];   /* 3 bits codigo | 13 bits ms */
+static volatile uint8_t  traza_n = 0;
+
+/* Anota quien pasa a tener el procesador: escribe el nibble bajo de PORTB
+   entero y agrega un evento a la traza. Se llama siempre con las
+   interrupciones deshabilitadas, de modo que tiempo_ms se lee directo y la
+   escritura del puerto es atomica. Los eventos que no cambian el dueno se
+   descartan (por ejemplo Idle -> tarea de timers -> Idle).               */
+static void registrar_dueno(uint8_t code, uint8_t pin)
+{
+  PORTB = (uint8_t)((PORTB & (uint8_t)~MASCARA_PINES) | pin);
+
+  if (traza_n < TRAZA_N) {
+    if (traza_n == 0 || (uint8_t)(traza_ev[traza_n - 1] >> 13) != code) {
+      traza_ev[traza_n++] = (uint16_t)(((uint16_t)code << 13) |
+                                       ((uint16_t)tiempo_ms & 0x1FFF));
+    }
+  }
+}
+
+extern "C" void marcar_switch_in(void *tcb)
+{
+  for (uint8_t i = 0; i < N_TAREAS; i++) {
+    if (tareas[i].h == (TaskHandle_t)tcb) {
+      if (tareas[i].ejecutando) {
+        registrar_dueno(i, (uint8_t)_BV(tareas[i].pin));
+        return;
+      }
+      break;
+    }
+  }
+  registrar_dueno(TRAZA_OCIO, 0);   /* Idle, timers, o una tarea entre rafagas */
+}
+
 /* ---------------- despachador de activaciones --------------------------
  * Libera las tareas cuyo instante de activacion ya vencio. Lo llaman tanto la
- * tarea de sistema como las periodicas al final de cada cuanto, de modo que
- * una activacion nunca se atrasa mas de un cuanto, igual que ocurriria con un
+ * tarea Idle como las periodicas al cerrar cada cuanto, de modo que una
+ * activacion nunca se atrasa mas de un cuanto, igual que ocurriria con un
  * tick de 16 ms.
  *
  * El planificador se suspende durante el reparto para que las cuatro tareas
@@ -170,35 +246,43 @@ static void despachar(void)
   xTaskResumeAll();
 }
 
-/* ---------------- cuerpo comun de las tareas periodicas ----------------- */
+/* ---------------- cuerpo comun de las tareas periodicas -----------------
+ * La tarea ya no toca su pin dentro de la rafaga: solo marca donde empieza y
+ * donde termina. Lo que ocurre en el medio lo dibuja el nucleo.           */
 static void vPeriodica(void *pv)
 {
   tarea_t *t = (tarea_t *)pv;
-  const uint8_t bit = (uint8_t)(1 << t->pin);
+  const uint8_t bit = (uint8_t)_BV(t->pin);
   const uint8_t idx = (uint8_t)(t - tareas);
 
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   /* espera su activacion */
 
-    uint16_t restante = t->C_ms;
+    /* Abre la rafaga. El gancho del nucleo no pudo marcarla: cuando esta
+       tarea fue elegida, `ejecutando` todavia valia 0. De aca en mas si la
+       marca en cada cambio de contexto.                                  */
+    taskENTER_CRITICAL();
+    t->ejecutando = 1;
+    registrar_dueno(idx, bit);
+    taskEXIT_CRITICAL();
 
-    PORTB |= bit;  traza(idx);                 /* alto mientras usa la CPU */
+    uint16_t restante = t->C_ms;
     while (restante) {
       const uint16_t trozo = (restante > QUANTUM_MS) ? QUANTUM_MS : restante;
       quemar_cpu_ms(trozo);
       restante -= trozo;
 
-      despachar();                             /* libera lo que haya vencido */
+      despachar();                /* libera lo que haya vencido */
 
-#if USAR_ROUND_ROBIN
-      if (restante) {
-        PORTB &= (uint8_t)~bit;  traza((uint8_t)(N_TAREAS + idx));
-        taskYIELD();                           /* fin de cuanto: rota */
-        PORTB |= bit;  traza(idx);             /* la recupera */
-      }
+#if USAR_ROUND_ROBIN && CUANTO_POR_TAREA
+      if (restante) taskYIELD();  /* fin de cuanto: rota la lista de listos */
 #endif
     }
-    PORTB &= (uint8_t)~bit;  traza((uint8_t)(N_TAREAS + idx));
+
+    taskENTER_CRITICAL();
+    t->ejecutando = 0;
+    registrar_dueno(TRAZA_OCIO, 0);   /* cierra la rafaga */
+    taskEXIT_CRITICAL();
 
     const uint32_t fin = ahora();
 
@@ -219,41 +303,47 @@ static void vPeriodica(void *pv)
  * sobra RAM para una sexta pila.
  *
  * Hace tres cosas: consume el tiempo ocioso de forma calibrada para que el
- * reloj siga avanzando, despacha activaciones, e imprime el reporte. Imprime
- * una linea por vuelta, de modo que la transmision serie no retrase el
- * despacho mas que eso.                                                   */
+ * reloj siga avanzando, despacha activaciones, e imprime. Imprime una linea
+ * por vuelta, de modo que la transmision serie no retrase el despacho mas
+ * que eso.                                                                */
 void loop()
 {
   static uint32_t prox_rep = MS_REPORTE;
   static uint8_t  linea    = N_TAREAS;   /* N_TAREAS = no hay reporte en curso */
+  static uint8_t  tz       = 0;
+  static uint8_t  pend_tick = 0;
 
   quemar_cpu_ms(1);
   despachar();
 
-  /* Cronograma: se imprime una sola vez, cuando la traza se lleno. Un evento
-     por pasada, para no retrasar el despacho.
-     Los eventos no vienen necesariamente alternados: una tarea puede ser
-     desplazada sin llegar a cerrar su tramo. Por eso se decodifica con una
-     maquina de estados, cerrando el tramo abierto en el instante del evento
-     siguiente, sea un cierre o el arranque de otra tarea.                 */
-  static uint8_t  tz = 0;
-  static uint16_t tz_ini[N_TAREAS];   /* instante de apertura, por tarea */
-
-  if (traza_n >= TRAZA_N && tz < TRAZA_N) {
+  /* Cronograma: se imprime una sola vez, cuando la traza se lleno. El tramo
+     del evento tz termina en el instante del evento tz+1.                 */
+  if (traza_n >= TRAZA_N && tz + 1 < TRAZA_N) {
     if (tz == 0) Serial.println(F("--- cronograma: tarea inicio fin (ms)"));
 
-    const uint16_t e = traza_ev[tz++];
-    const uint8_t  c = (uint8_t)(e >> 13);
-    const uint16_t t = (uint16_t)(e & 0x1FFF);
+    const uint16_t e  = traza_ev[tz];
+    const uint16_t e2 = traza_ev[tz + 1];
+    tz++;
 
+    const uint8_t c = (uint8_t)(e >> 13);
     if (c < N_TAREAS) {
-      tz_ini[c] = t;                  /* abre el tramo de esa tarea */
-    } else {
-      const uint8_t i = (uint8_t)(c - N_TAREAS);
-      Serial.print(tareas[i].nombre); Serial.print(' ');
-      Serial.print(tz_ini[i]);        Serial.print(' ');
-      Serial.println(t);
+      Serial.print(tareas[c].nombre);         Serial.print(' ');
+      Serial.print((uint16_t)(e  & 0x1FFF));  Serial.print(' ');
+      Serial.println((uint16_t)(e2 & 0x1FFF));
     }
+    return;
+  }
+
+  /* Contador de ticks del sistema operativo contra el reloj propio. Es la
+     medicion del Ejercicio 3 hecha permanente: si el tick de Proteus midiera
+     tiempo real, tick x 16 ms tendria que dar lo mismo que t. Lo que se
+     observa es que se queda muy atras, porque el tick solo avanza durante el
+     tiempo ocioso. Es la justificacion de todo el banco en un solo numero. */
+  if (pend_tick) {
+    pend_tick = 0;
+    const uint32_t tk = (uint32_t)xTaskGetTickCount();
+    Serial.print(F("tick=")); Serial.print(tk);
+    Serial.print(F(" x16=")); Serial.println(tk * portTICK_PERIOD_MS);
     return;
   }
 
@@ -269,6 +359,7 @@ void loop()
   } else if (ahora() >= prox_rep) {
     prox_rep += MS_REPORTE;
     Serial.print(F("--- t=")); Serial.println(ahora());
+    pend_tick = 1;
     linea = 0;
   }
 }
@@ -278,8 +369,8 @@ void setup()
 {
   Serial.begin(9600);
 
-  DDRB  |=  (uint8_t)(_BV(PB0) | _BV(PB1) | _BV(PB2) | _BV(PB3));
-  PORTB &= (uint8_t)~(_BV(PB0) | _BV(PB1) | _BV(PB2) | _BV(PB3));
+  DDRB  |=  MASCARA_PINES;
+  PORTB &= (uint8_t)~MASCARA_PINES;
 
   Serial.print(F("unidad="));   Serial.print((uint16_t)MS_POR_UNIDAD);
   Serial.print(F("ms cuanto=")); Serial.print((uint16_t)QUANTUM_MS);
@@ -288,6 +379,14 @@ void setup()
 #else
   Serial.println(F("ms politica=FIFO"));
 #endif
+  /* Deja constancia en la terminal de la configuracion que pide el enunciado,
+     leida de FreeRTOSConfig.h, no de una constante propia. */
+  Serial.print(F("PREEMPTION="));
+  Serial.print((int)configUSE_PREEMPTION);
+  Serial.print(F(" TIME_SLICING="));
+  Serial.print((int)configUSE_TIME_SLICING);
+  Serial.print(F(" cuantoPorTarea="));
+  Serial.println((int)CUANTO_POR_TAREA);
 
   for (uint8_t i = 0; i < N_TAREAS; i++) {
     tareas[i].prox_ms = 0;        /* activacion simultanea en t = 0 */

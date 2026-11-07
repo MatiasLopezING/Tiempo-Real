@@ -1,0 +1,91 @@
+COMO REPRODUCIR LOS EJERCICIOS 4 Y 5
+Sistemas de Tiempo Real - Practica 3
+
+Entorno: VS Code + PlatformIO, placa "uno" (ATmega328P @ 16 MHz),
+biblioteca feilipu/FreeRTOS, simulacion en Proteus 8.
+
+
+1. ARCHIVOS DEL PROYECTO
+
+Son tres y van en un proyecto PlatformIO nuevo o en el que ya tengas:
+
+  Ejercicio4.cpp     ->  src/main.cpp
+  traza_switch.h     ->  include/traza_switch.h      (crear la carpeta si no esta)
+  platformio.ini     ->  platformio.ini              (en la raiz del proyecto)
+
+Los tres son necesarios. platformio.ini trae la bandera -include que engancha
+traza_switch.h; sin ese header el proyecto no compila.
+
+Para el Ejercicio 5 es lo mismo pero con Ejercicio5.cpp.
+
+
+2. CONFIGURACION DEL PLANIFICADOR
+
+Es lo que pide el enunciado en "Entorno de Trabajo Comun":
+
+  "en el archivo FreeRTOSConfig.h de la biblioteca, configUSE_PREEMPTION debe
+   estar habilitado; configUSE_TIME_SLICING determina si el reparto entre
+   tareas de igual prioridad es por Round Robin (1) o por FIFO (0)."
+
+El archivo aparece recien despues del primer Build, en:
+
+  .pio/libdeps/uno/FreeRTOS/src/FreeRTOSConfig.h
+
+  Ejercicio 4 (Round Robin): no hay que tocar nada. La biblioteca ya viene con
+                             configUSE_PREEMPTION   = 1   (linea 52)
+                             configUSE_TIME_SLICING = 1   (linea 70)
+
+  Ejercicio 5 (FIFO):        cambiar la linea 70 a
+                             configUSE_TIME_SLICING = 0
+                             y despues Clean + Build.
+
+En main.cpp, USAR_ROUND_ROBIN tiene que valer lo mismo que
+configUSE_TIME_SLICING (1 para el Ejercicio 4, 0 para el 5). Si quedan
+desparejos el proyecto no compila: hay un #error puesto a proposito.
+
+Ojo: si se borra la carpeta .pio, o se clona el repo de cero, PlatformIO baja
+la biblioteca limpia y el cambio del Ejercicio 5 se pierde. Hay que rehacerlo.
+
+No hay que modificar ningun otro archivo de la biblioteca. En particular no se
+toca port.c: el tick sigue saliendo del perro guardian, como viene.
+
+
+3. PROTEUS
+
+El Program File del ATmega328P tiene que apuntar al .elf del Build propio:
+
+  .pio/build/uno/firmware.elf
+
+El .elf que esta en esta carpeta es de una corrida anterior y queda viejo en
+cuanto alguien recompila. Conviene regenerarlo, no confiar en el que esta.
+
+Analizador logico: canales 0 a 3 en PB0, PB1, PB2 y PB3.
+Capture Resolution en 20 us, que da una ventana de 200 ms (unas tres vueltas
+completas). Con mas resolucion entran treinta y pico de cuantos en pantalla y
+se ve como una maraña aunque la señal este bien.
+
+Terminal virtual a 9600 baudios sobre TXD.
+
+
+4. QUE TIENE QUE APARECER
+
+Al arrancar, la terminal escribe:
+
+  unidad=64ms cuanto=16ms politica=RR
+  PREEMPTION=1 TIME_SLICING=1 cuantoPorTarea=1
+  crear A -> 1   (y lo mismo para B, C y D)
+  RAM libre=...
+  tarea activ perdidos Rmax jitter fin1
+
+La linea PREEMPTION / TIME_SLICING la lee de FreeRTOSConfig.h, no de una
+constante propia, asi que sirve para confirmar de un vistazo con que
+configuracion esta corriendo.
+
+Despues sale el cronograma en texto (tarea, instante de inicio, instante de
+fin, en ms) y cada dos hiperperiodos un bloque de reporte con las cuatro
+tareas.
+
+En el analizador tiene que haber siempre UN SOLO canal en alto. Los pines los
+escribe el nucleo en cada cambio de contexto, desde el gancho
+traceTASK_SWITCHED_IN(), de modo que dos canales en alto a la vez serian un
+error. Si aparecen, el .elf cargado en Proteus es viejo.

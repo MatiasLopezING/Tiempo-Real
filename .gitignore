@@ -1,0 +1,7 @@
+# Proteus: archivos que regenera solo y que son de una maquina en particular
+*.workspace
+*Autosaved*.pdsprj
+*.pdsbak
+
+# PlatformIO
+.pio/
