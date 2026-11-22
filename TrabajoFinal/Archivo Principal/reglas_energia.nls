@@ -1,0 +1,370 @@
+; ============================================================================
+; reglas_energia.nls
+; Modulo reutilizable para modelar:
+;   Temperatura -> Aires Acondicionados -> Consumo Electrico -> Cortes y Reposicion
+;
+; Se importa con:
+;   __includes [ "reglas_energia.nls" ]
+; desde el modelo principal de NetLogo (requiere la extension [csv] ya cargada).
+;
+; REQUISITO EN EL MODELO PRINCIPAL:
+;   Todo breed que actue como "nodo de carga" (ej. mt-subs) debe declarar en su
+;   `*-own`, ademas de `clientes` y `pot-instalada` (en kVA):
+;
+;     estado                 ; "operativo" | "sobrecargado" | "cortado"
+;     demanda-base-mw
+;     demanda-aa-mw
+;     carga-actual-mw
+;     aa-encendidos
+;     factor-carga
+;     estres-termico
+;     timer-reposicion
+;     ticks-post-reconexion
+;     cant-cortes
+; ============================================================================
+
+globals [
+  ; --- Datos cargados desde el analisis de demanda ---
+  perfil-base-habil
+  perfil-base-finde
+  clientes-totales-red
+
+  ; --- Parametros del modelo de demanda y aires acondicionados ---
+  cfg-escala-red
+  cfg-eq-aa-por-cliente
+  cfg-pot-unit-aa-kw
+  cfg-eq-aa-ref
+  cfg-pot-unit-aa-ref-kw
+  cfg-f-sim-max
+  cfg-cos-phi
+
+  ; --- Parametros de sobrecarga, corte y restablecimiento ---
+  cfg-minutos-por-tick
+  cfg-umbral-alerta
+  cfg-umbral-sobrecarga
+  cfg-umbral-corte-inmediato
+  cfg-limite-estres-termico
+  cfg-tasa-enfriamiento-op
+  cfg-tasa-enfriamiento-al
+  cfg-tasa-enfriamiento-off
+  cfg-reposicion-min-min
+  cfg-reposicion-max-min
+  cfg-factor-rebote
+  cfg-duracion-rebote-min
+]
+
+
+; ============================================================================
+; 1. INICIALIZACION Y CARGA DE PERFILES
+; ============================================================================
+
+to init-reglas-energia [ ruta-perfil-csv nodos-carga ]
+  set cfg-escala-red 0.55
+  set cfg-eq-aa-ref 0.90
+  set cfg-pot-unit-aa-ref-kw 1.15
+  set cfg-eq-aa-por-cliente cfg-eq-aa-ref
+  set cfg-pot-unit-aa-kw cfg-pot-unit-aa-ref-kw
+  set cfg-f-sim-max 0.85
+  set cfg-cos-phi 0.95
+
+  set cfg-minutos-por-tick 5
+  set cfg-umbral-alerta 0.85
+  set cfg-umbral-sobrecarga 1.00
+  set cfg-umbral-corte-inmediato 1.25
+  set cfg-limite-estres-termico 0.60
+  set cfg-tasa-enfriamiento-op 0.05
+  set cfg-tasa-enfriamiento-al 0.02
+  set cfg-tasa-enfriamiento-off 0.08
+  set cfg-reposicion-min-min 60
+  set cfg-reposicion-max-min 180
+  set cfg-factor-rebote 1.20
+  set cfg-duracion-rebote-min 15
+
+  cargar-perfil-base ruta-perfil-csv
+
+  set clientes-totales-red sum [ clientes ] of nodos-carga
+  if clientes-totales-red <= 0 [
+    set clientes-totales-red 196972
+  ]
+
+  ask nodos-carga [ iniciar-nodo-carga ]
+end
+
+; Carga perfil_base_horario.csv (columnas: hora, habil, finde).
+to cargar-perfil-base [ ruta-csv ]
+  ifelse file-exists? ruta-csv [
+    let filas but-first csv:from-file ruta-csv
+    set perfil-base-habil map [ f -> item 1 f ] filas
+    set perfil-base-finde map [ f -> item 2 f ] filas
+  ] [
+    print (word "[reglas_energia] Aviso: no se encontro " ruta-csv "; se usa perfil base embebido.")
+    set perfil-base-habil [ 343 317 299 291 287 289 303 310 327 345 354 366 373 374 367 364 363 367 377 407 434 431 405 376 ]
+    set perfil-base-finde [ 326 305 287 279 272 269 266 258 271 291 301 314 324 327 322 318 320 328 339 371 394 389 368 346 ]
+  ]
+end
+
+; Contexto: agente de carga.
+to iniciar-nodo-carga
+  set estado "operativo"
+  set demanda-base-mw 0
+  set demanda-aa-mw 0
+  set carga-actual-mw 0
+  set aa-encendidos 0
+  set factor-carga 0
+  set estres-termico 0
+  set timer-reposicion 0
+  set ticks-post-reconexion 0
+  set cant-cortes 0
+end
+
+
+; ============================================================================
+; 2. MODELO DE TEMPERATURA, AIRES ACONDICIONADOS Y DEMANDA ELECTRICA
+; ============================================================================
+
+; k(T): quiebres en 22 C (+1.14 %/C) y 30.5 C (+4.43 %/C)
+to-report multiplicador-temp [ T ]
+  let c1 max (list 0 (min (list (T - 22) 8.5)))
+  let c2 max (list 0 (T - 30.5))
+  report exp (0.01132 * c1 + 0.04338 * c2)
+end
+
+; Demanda base total de la region EDELAP (MW) para la hora y tipo de dia.
+to-report base-horaria-mw [ hora finde? ]
+  let h ((floor hora) mod 24)
+  if h < 0 [ set h h + 24 ]
+  ifelse finde?
+    [ report item h perfil-base-finde ]
+    [ report item h perfil-base-habil ]
+end
+
+; Demanda base unitaria por cliente (kW/cliente) en la red modelada.
+to-report base-por-cliente-kw [ hora finde? ]
+  report ((base-horaria-mw hora finde?) * cfg-escala-red * 1000) / clientes-totales-red
+end
+
+; Fraccion f_on de equipos de AA encendidos [0, cfg-f-sim-max].
+to-report fraccion-aa-encendidos [ hora finde? T ]
+  let k multiplicador-temp T
+  if k <= 1 [ report 0 ]
+  let p-base-cli base-por-cliente-kw hora finde?
+  let delta-calor-cli p-base-cli * (k - 1)
+  let pot-aa-inst-ref-cli (cfg-eq-aa-ref * cfg-pot-unit-aa-ref-kw)
+  if pot-aa-inst-ref-cli <= 0 [ report 0 ]
+  let f-raw delta-calor-cli / pot-aa-inst-ref-cli
+  report min (list cfg-f-sim-max (max (list 0 f-raw)))
+end
+
+; Contexto: agente de carga.
+to-report capacidad-efectiva-mw
+  report (pot-instalada / 1000) * cfg-cos-phi
+end
+
+; Contexto: agente de carga con `clientes` y `pot-instalada`.
+to actualizar-demanda-nodo [ hora finde? T ]
+  ifelse estado = "cortado" [
+    set demanda-base-mw 0
+    set demanda-aa-mw 0
+    set aa-encendidos 0
+    set carga-actual-mw 0
+    set factor-carga 0
+  ] [
+    let p-base-cli base-por-cliente-kw hora finde?
+    let f-on fraccion-aa-encendidos hora finde? T
+
+    set demanda-base-mw (clientes * p-base-cli) / 1000
+    set aa-encendidos round (clientes * cfg-eq-aa-por-cliente * f-on)
+    set demanda-aa-mw (aa-encendidos * cfg-pot-unit-aa-kw) / 1000
+
+    let carga-bruta demanda-base-mw + demanda-aa-mw
+
+    ; Pico transitorio de reconexion (cold load pickup)
+    if ticks-post-reconexion > 0 [
+      set carga-bruta carga-bruta * cfg-factor-rebote
+      set ticks-post-reconexion ticks-post-reconexion - 1
+    ]
+
+    set carga-actual-mw carga-bruta
+    let cap capacidad-efectiva-mw
+    ifelse cap > 0
+      [ set factor-carga carga-actual-mw / cap ]
+      [ set factor-carga 0 ]
+  ]
+end
+
+
+; ============================================================================
+; 3. MAQUINA DE ESTADOS: SOBRECARGA TERMICA, CORTE Y RESTABLECIMIENTO
+; ============================================================================
+
+; Contexto: agente de carga.
+to actualizar-estado-nodo
+  let paso-rel cfg-minutos-por-tick / 5
+
+  ifelse estado = "cortado" [
+    set estres-termico max (list 0 (estres-termico - (cfg-tasa-enfriamiento-off * paso-rel)))
+    set timer-reposicion timer-reposicion - 1
+    if timer-reposicion <= 0 [
+      set estado "operativo"
+      set estres-termico 0
+      set ticks-post-reconexion max (list 1 (round (cfg-duracion-rebote-min / cfg-minutos-por-tick)))
+    ]
+  ] [
+    (ifelse
+      factor-carga >= cfg-umbral-corte-inmediato [
+        disparar-corte-nodo
+      ]
+      factor-carga > cfg-umbral-sobrecarga [
+        set estado "sobrecargado"
+        let exceso (factor-carga - cfg-umbral-sobrecarga)
+        set estres-termico estres-termico + (exceso * paso-rel)
+        if estres-termico >= cfg-limite-estres-termico [
+          disparar-corte-nodo
+        ]
+      ]
+      factor-carga >= cfg-umbral-alerta [
+        set estado "sobrecargado"
+        set estres-termico max (list 0 (estres-termico - (cfg-tasa-enfriamiento-al * paso-rel)))
+      ]
+      [
+        set estado "operativo"
+        set estres-termico max (list 0 (estres-termico - (cfg-tasa-enfriamiento-op * paso-rel)))
+      ])
+  ]
+end
+
+; Contexto: agente de carga.
+to disparar-corte-nodo
+  if estado != "cortado" [
+    set cant-cortes cant-cortes + 1
+  ]
+  set estado "cortado"
+  set demanda-base-mw 0
+  set demanda-aa-mw 0
+  set aa-encendidos 0
+  set carga-actual-mw 0
+  set factor-carga 0
+  set ticks-post-reconexion 0
+  let dur-min cfg-reposicion-min-min + random-float (max (list 0 (cfg-reposicion-max-min - cfg-reposicion-min-min)))
+  set timer-reposicion max (list 1 (round (dur-min / cfg-minutos-por-tick)))
+end
+
+; Contexto: agente de carga.
+to colorear-nodo-carga
+  (ifelse
+    estado = "cortado"      [ set color red ]
+    estado = "sobrecargado" [ set color orange ]
+    [ set color green ])
+end
+
+
+; ============================================================================
+; 4. EJECUCION POR TICK
+; ============================================================================
+
+to step-red-simple [ nodos-carga hora finde? T ]
+  ask nodos-carga [
+    actualizar-demanda-nodo hora finde? T
+    actualizar-estado-nodo
+    colorear-nodo-carga
+  ]
+end
+
+; Contexto: subestacion padre AT/MT; `hijos` = transformadores MT/BT.
+to actualizar-subestacion-agregada [ hijos ]
+  ifelse estado = "cortado" [
+    set demanda-base-mw 0
+    set demanda-aa-mw 0
+    set aa-encendidos 0
+    set carga-actual-mw 0
+    set factor-carga 0
+    actualizar-estado-nodo
+    if estado = "cortado" [
+      ask hijos [
+        set estado "cortado"
+        set demanda-base-mw 0
+        set demanda-aa-mw 0
+        set aa-encendidos 0
+        set carga-actual-mw 0
+        set factor-carga 0
+        set timer-reposicion max (list timer-reposicion 1)
+        colorear-nodo-carga
+      ]
+    ]
+  ] [
+    set demanda-base-mw sum [ demanda-base-mw ] of hijos
+    set demanda-aa-mw sum [ demanda-aa-mw ] of hijos
+    set aa-encendidos sum [ aa-encendidos ] of hijos
+    set carga-actual-mw sum [ carga-actual-mw ] of hijos
+    let cap capacidad-efectiva-mw
+    ifelse cap > 0
+      [ set factor-carga carga-actual-mw / cap ]
+      [ set factor-carga 0 ]
+    actualizar-estado-nodo
+    if estado = "cortado" [
+      let t-rep timer-reposicion
+      ask hijos [
+        disparar-corte-nodo
+        set timer-reposicion max (list timer-reposicion t-rep)
+        colorear-nodo-carga
+      ]
+    ]
+  ]
+  colorear-nodo-carga
+end
+
+
+; ============================================================================
+; 5. UTILIDADES DE TEMPERATURA Y METRICAS GLOBALES
+; ============================================================================
+
+; Minimo a las 03:00, maximo a las 15:00. `cos` recibe grados.
+to-report temperatura-diaria-sintetica [ hora t-min t-max ]
+  let t-media (t-min + t-max) / 2
+  let amplitud (t-max - t-min) / 2
+  report t-media + amplitud * cos (15 * (hora - 15))
+end
+
+; Serie de temperaturas de una fecha (ej. "2026-02-03").
+; Verificar que la temperatura este en la columna 3 del CSV.
+to-report cargar-temperaturas-dia [ ruta-csv fecha-prefijo ]
+  let serie []
+  if not file-exists? ruta-csv [
+    print (word "[reglas_energia] No se encontro " ruta-csv)
+    report serie
+  ]
+  let filas but-first csv:from-file ruta-csv
+  foreach filas [ f ->
+    let fecha-str (word item 0 f)
+    if (length fecha-str >= length fecha-prefijo) and (substring fecha-str 0 (length fecha-prefijo) = fecha-prefijo) [
+      set serie lput (item 3 f) serie
+    ]
+  ]
+  report serie
+end
+
+; --- Reporters para monitores y graficos ---
+
+to-report demanda-total-mw [ nodos ]
+  report sum [ carga-actual-mw ] of nodos
+end
+
+to-report demanda-base-total-mw [ nodos ]
+  report sum [ demanda-base-mw ] of nodos
+end
+
+to-report demanda-aa-total-mw [ nodos ]
+  report sum [ demanda-aa-mw ] of nodos
+end
+
+to-report aa-encendidos-total [ nodos ]
+  report sum [ aa-encendidos ] of nodos
+end
+
+to-report clientes-sin-luz [ nodos ]
+  report sum [ clientes ] of (nodos with [ estado = "cortado" ])
+end
+
+to-report cortes-acumulados [ nodos ]
+  report sum [ cant-cortes ] of nodos
+end
