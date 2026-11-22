@@ -18,7 +18,7 @@ turtles-own [
   factor-carga estres-termico timer-reposicion ticks-post-reconexion cant-cortes
 ]
 mt-subs-own [ acceso padre ]
-at-subs-own [ hijos ]
+at-subs-own [ nodos-hijos ]
 power-lines-own [length-m n-spans voltage-kv tipo circuits]
 
 globals [ metros-por-patch serie-temp dia-finde? ]
@@ -160,7 +160,7 @@ end
 ; gana la mas proxima en distancia.
 to asignar-padres
   ask mt-subs [ set padre nobody ]
-  ask at-subs [ set hijos no-turtles ]
+  ask at-subs [ set nodos-hijos no-turtles ]
   ask mt-subs [
     let vistos (turtle-set self)
     let frente (turtle-set self)
@@ -177,18 +177,18 @@ to asignar-padres
     ]
     set padre encontrado
   ]
-  ask at-subs [ set hijos (mt-subs with [ padre = myself ]) ]
+  ask at-subs [ set nodos-hijos (mt-subs with [ padre = myself ]) ]
 end
 
 ; Las AT/AT del shapefile no traen clientes ni potencia: la capa oficial solo
 ; publica su ubicacion. Se las modela como agregadoras: su carga es la suma de
-; la de los nodos que alimentan y su capacidad, la suma de la de sus hijos.
+; la de los nodos que alimentan y su capacidad, la suma de la de sus nodos-hijos.
 ; Es una hipotesis del modelo y hay que declararla.
 to preparar-at-subs
   ask at-subs [
-    ifelse any? hijos [
-      set clientes sum [ clientes ] of hijos
-      set pot-instalada sum [ pot-instalada ] of hijos
+    ifelse any? nodos-hijos [
+      set clientes sum [ clientes ] of nodos-hijos
+      set pot-instalada sum [ pot-instalada ] of nodos-hijos
     ] [
       set clientes 0
       set pot-instalada 0
@@ -213,7 +213,7 @@ to go
   let T temperatura-ahora
 
   step-red-simple mt-subs hora dia-finde? T
-  ask at-subs with [ any? hijos ] [ actualizar-subestacion-agregada hijos ]
+  ask at-subs with [ any? nodos-hijos ] [ actualizar-subestacion-agregada nodos-hijos ]
 
   etiquetar
   if (ticks mod (60 / cfg-minutos-por-tick)) = 0 [ informe-hora hora T ]
@@ -248,7 +248,7 @@ to etiquetar
     set label (word node-name "  " (round (100 * factor-carga)) "%")
   ]
   ask at-subs [
-    ifelse any? hijos
+    ifelse any? nodos-hijos
       [ set label (word node-name "  " (round (100 * factor-carga)) "%") ]
       [ set label node-name ]
   ]
@@ -269,7 +269,7 @@ to estilizar
   ask at-subs [
     set shape "square"
     set size 6
-    ifelse any? hijos [ set color green ] [ set color gray ]
+    ifelse any? nodos-hijos [ set color green ] [ set color gray ]
     set label-color black
   ]
   ask mt-subs [
@@ -300,7 +300,7 @@ to resumen
       [ print (word "  " node-name " -> sin padre alcanzable por la red") ]
       [ print (word "  " node-name " (" clientes " clientes) -> " [node-name] of padre) ]
   ]
-  print (word "AT/AT que alimentan algo: " count at-subs with [any? hijos] " de " count at-subs)
+  print (word "AT/AT que alimentan algo: " count at-subs with [any? nodos-hijos] " de " count at-subs)
 end]]></code>
   <widgets>
     <view x="180" wrappingAllowedX="false" y="0" frameRate="30.0" minPycor="-150" height="606" showTickCounter="true" patchSize="2.0" fontSize="10" wrappingAllowedY="false" width="606" tickCounterLabel="ticks" maxPycor="150" updateMode="0" maxPxcor="150" minPxcor="-150"></view>
