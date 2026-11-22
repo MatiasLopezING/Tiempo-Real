@@ -1,106 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <model version="NetLogo 7.0.4" snapToGrid="true">
-<<<<<<< Updated upstream:TrabajoFinal/NetLogo/simulacion_apagones.nlogo.nlogox
-  <code><![CDATA[; --- DEFINICIÓN DEL SISTEMA Y MODELADO BASADO EN AGENTES (ABMS) ---
-=======
   <code><![CDATA[extensions [csv nw]
-__includes [ "reglas_energia.nls" ]
->>>>>>> Stashed changes:TrabajoFinal/Archivo Principal/laplata_at.nlogox
 
-breed [ transformadores transformador ] ; Agente 1: Infraestructura de distribución
-breed [ hogares hogar ]               ; Agente 2: Consumidores residenciales
+breed [at-subs at-sub]          ; subestaciones AT/AT
+breed [mt-subs mt-sub]          ; subestaciones AT/MT (tienen demanda)
+breed [junctions junction]      ; empalmes y derivaciones
+breed [boundaries boundary]     ; extremos libres: frontera del dato
+undirected-link-breed [power-lines power-line]
 
-<<<<<<< Updated upstream:TrabajoFinal/NetLogo/simulacion_apagones.nlogo.nlogox
-; ATRIBUTOS Y VARIABLES DE ESTADO DEL SISTEMA[cite: 12, 13]
-transformadores-own [
-  limite-carga   ; Parámetro: Magnitud constante que caracteriza la capacidad física[cite: 12]
-  carga-actual   ; Variable de estado: Magnitud dependiente de la suma de demandas[cite: 12]
-  estado         ; Variable de estado discreto: "operativo", "sobrecargado", "colapsado"[cite: 12]
-]
-=======
 turtles-own [nid node-name utm-x utm-y]
-mt-subs-own [
-  clientes pot-instalada acceso
-  estado demanda-base-mw demanda-aa-mw carga-actual-mw
-  aa-encendidos factor-carga estres-termico
-  timer-reposicion ticks-post-reconexion cant-cortes
-]
+mt-subs-own [clientes pot-instalada acceso participacion demanda-mw carga-pct]
 power-lines-own [length-m n-spans voltage-kv tipo circuits]
->>>>>>> Stashed changes:TrabajoFinal/Archivo Principal/laplata_at.nlogox
 
-hogares-own [
-  demanda        ; Variable dependiente: Consumo energético actual[cite: 12]
-  conectado?     ; Variable de estado: true si tiene suministro, false si hay apagón
-]
-
-<<<<<<< Updated upstream:TrabajoFinal/NetLogo/simulacion_apagones.nlogo.nlogox
-globals [
-  temperatura_actual ; Variable de Entrada (Estímulo del Entorno / Ambiente)[cite: 12, 13]
-]
-=======
-; Widgets de interfaz que usa este codigo (se crean en la UI, NO se declaran aca):
-;   escala                  slider  0.30 - 0.70, paso 0.01, valor 0.55
-;   temp-min                slider  10 - 30,     paso 0.5,  valor 24   (C)
-;   temp-max                slider  25 - 45,     paso 0.5,  valor 39   (C)
-;   eq-aa-por-cliente       slider  0.3 - 1.5,   paso 0.05, valor 0.90
-;   pot-unit-aa-kw          slider  0.8 - 1.5,   paso 0.05, valor 1.15 (kW)
-;   es-finde?               switch  (apagado = dia habil)
+globals [metros-por-patch]
 
 to setup-ciudad
   cargar-red "ciudad"
 end
->>>>>>> Stashed changes:TrabajoFinal/Archivo Principal/laplata_at.nlogox
 
-to setup
-  clear-all
-<<<<<<< Updated upstream:TrabajoFinal/NetLogo/simulacion_apagones.nlogo.nlogox
-  
-  ; 1. INICIALIZACIÓN DE LA ESTRUCTURA DEL SISTEMA[cite: 12]
-  create-transformadores 5 [
-    set shape "box"
-    set size 2
-    setxy random-xcor random-ycor
-    
-    ; Asignación de parámetros y estado inicial
-    set limite-carga 100    
-    set carga-actual 0
-    set estado "operativo"  
-    set color yellow
-  ]
-  
-  ask transformadores [
-    hatch-hogares 15 [
-      set shape "house"
-      set size 1
-      fd random-float 3
-      
-      ; Asignación de estado inicial del agente
-      set demanda 0
-      set conectado? true
-      set color green
-    ]
-  ]
-  reset-ticks
+to setup-completa
+  cargar-red "completa"
 end
 
-to go
-  ; 2. PERCEPCIÓN DEL ENTORNO[cite: 13]
-  ; El sistema lee la variable de entrada externa (simulando un sensor o estímulo físico)[cite: 10, 12]
-  set temperatura_actual temperatura 
-  
-  ask transformadores [ set carga-actual 0 ]
-  
-  ; 3. REGLAS DE REACCIÓN DE LOS AGENTES (Hogares)[cite: 13]
-  ask hogares [
-    if conectado? [
-      ; Comportamiento dinámico basado en el estímulo ambiental[cite: 13]
-      ifelse temperatura_actual > 30 [
-        set demanda random 10 + 5 ; Ola de calor: Encendido concurrente de AA
-        set color red
-      ] [
-        set demanda random 5 + 1  ; Consumo nominal
-        set color green
-=======
+to cargar-red [modo]
+  clear-all
   set-topology false false
   resize-world -150 150 -150 150
   set-patch-size 2
@@ -112,12 +35,11 @@ to go
   let filas-nodos but-first csv:from-file "nodes_netlogo.csv"
   let filas-enlaces but-first csv:from-file "edges_netlogo.csv"
   crear-nodos filas-nodos
+  calcular-participacion
   ubicar-nodos modo
   crear-enlaces filas-enlaces
   estilizar
   resumen
-  init-reglas-energia "perfil_base_horario.csv" mt-subs
-  sincronizar-parametros
   reset-ticks
 end
 
@@ -127,7 +49,7 @@ to estilizar
     set label node-name set label-color black
   ]
   ask mt-subs [
-    set shape "triangle" set color green
+    set shape "triangle" set color orange
     set size (5 + clientes / 10000)
     set label node-name set label-color black
   ]
@@ -147,37 +69,14 @@ to crear-nodos [filas]
     (ifelse
       tipo-nodo = "AT_AT" [
         create-at-subs 1 [ iniciar-nodo f ]
->>>>>>> Stashed changes:TrabajoFinal/Archivo Principal/laplata_at.nlogox
       ]
-    ]
-  ]
-  
-  ; 4. EVALUACIÓN DE ESTADO Y TOLERANCIA A FALLAS (Transformadores)[cite: 10]
-  ask transformadores [
-    if estado != "colapsado" [
-      ; Interdependencia: El nodo suma la demanda de las partes conectadas[cite: 12]
-      set carga-actual sum [demanda] of hogares in-radius 4
-      
-      ; Lógica de Tolerancia a Fallas y Transición de Estados[cite: 10, 12]
-      ifelse carga-actual > limite-carga [
-        ; Falla Crítica: Superación del umbral térmico. 
-        set estado "colapsado"
-        set color black
-        ask hogares in-radius 4 [ 
-          set conectado? false 
-          set color black 
+      tipo-nodo = "AT_MT" [
+        create-mt-subs 1 [
+          iniciar-nodo f
+          set clientes item 8 f
+          set pot-instalada item 9 f
+          set acceso item 10 f
         ]
-<<<<<<< Updated upstream:TrabajoFinal/NetLogo/simulacion_apagones.nlogo.nlogox
-      ] [
-        ifelse carga-actual > (limite-carga * 0.8) [
-          ; Sistema con degradación aceptable (Fail-Soft) / Alerta temprana[cite: 10]
-          set estado "sobrecargado"
-          set color orange
-        ] [
-          ; Equilibrio Homeostático[cite: 12]
-          set estado "operativo"
-          set color yellow
-=======
       ]
       tipo-nodo = "dead_end" [
         create-boundaries 1 [ iniciar-nodo f ]
@@ -187,7 +86,6 @@ to crear-nodos [filas]
       ])
   ]
 end
-
 to iniciar-nodo [f]
   set nid item 0 f
   set utm-x item 1 f
@@ -209,7 +107,7 @@ to ubicar-nodos [modo]
   set ymin ymin - margen
   set ymax ymax + margen
   let lado max (list (xmax - xmin) (ymax - ymin))
-  let esc (2 * max-pxcor + 1) / lado      ; patches por metro
+  let esc (2 * max-pxcor + 1) / lado      ; patches por metro; el mundo mide 2*max-pxcor+1
   let xc (xmin + xmax) / 2
   let yc (ymin + ymax) / 2
   set metros-por-patch 1 / esc
@@ -224,7 +122,8 @@ end
 
 ; columnas edges_netlogo.csv: 0 from_nid, 1 to_nid, 2 length_m, 3 n_spans,
 ;                             4 voltage_kv, 5 tipo
-; Las lineas paralelas se fusionan y se cuentan en "circuits".
+; NetLogo no admite dos enlaces no dirigidos iguales entre el mismo par:
+; las líneas paralelas se fusionan y se cuentan en "circuits".
 to crear-enlaces [filas]
   foreach filas [ f ->
     let a one-of turtles with [nid = item 0 f]
@@ -243,22 +142,13 @@ to crear-enlaces [filas]
         ]
         [
           ask existente [ set circuits circuits + 1 ]
->>>>>>> Stashed changes:TrabajoFinal/Archivo Principal/laplata_at.nlogox
         ]
       ]
     ]
   ]
-<<<<<<< Updated upstream:TrabajoFinal/NetLogo/simulacion_apagones.nlogo.nlogox
-  
-  tick ; Avance del tiempo discreto del simulador[cite: 12]
-end]]></code>
-  <widgets>
-    <view x="368" wrappingAllowedX="true" y="10" frameRate="30.0" minPycor="-16" height="434" showTickCounter="true" patchSize="13.0" fontSize="10" wrappingAllowedY="true" width="434" tickCounterLabel="ticks" maxPycor="16" updateMode="0" maxPxcor="16" minPxcor="-16"></view>
-    <slider x="10" step="1" y="50" max="45" width="250" display="temperatura" height="50" min="15" direction="Horizontal" default="30.0" variable="temperatura"></slider>
-    <button x="20" y="130" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="55" display="setup">setup</button>
-    <button x="15" y="195" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="55" display="go">go</button>
-=======
 end
+
+
 
 to resumen
   print "--- red cargada ---"
@@ -272,53 +162,51 @@ to resumen
 end
 
 
-; ============================================================================
-; SIMULACION
-; ============================================================================
-
-; Copia los sliders de la interfaz a los parametros del modulo.
-; init-reglas-energia los pisa con defaults en cada setup, por eso se
-; vuelve a sincronizar despues del init y al inicio de cada tick.
-to sincronizar-parametros
-  set cfg-escala-red escala
-  set cfg-eq-aa-por-cliente eq-aa-por-cliente
-  set cfg-pot-unit-aa-kw pot-unit-aa-kw
-  ; cfg-eq-aa-ref y cfg-pot-unit-aa-ref-kw NO se tocan: son la calibracion
-  ; contra la curva CAMMESA. Mover los sliders cambia el escenario, no la calibracion.
+to calcular-participacion
+  let total-clientes sum [clientes] of mt-subs
+  if total-clientes > 0 [
+    ask mt-subs [
+      set participacion (clientes / total-clientes)
+    ]
+  ]
 end
 
 to go
-  sincronizar-parametros
-  step-red-simple mt-subs hora-sim es-finde? temperatura-sim
+  let hora (ticks mod 24)
+  ; Perfil base horario (0 a 23 hs) para dias habiles sacado del analisis de datos
+  let perfil-habil [343 317 299 291 287 289 303 310 327 345 360 365 368 369 367 364 363 367 377 407 434 431 405 376]
+  let demanda-base item hora perfil-habil
+  let mult multiplicador-temp temperatura
+
+  ask mt-subs [
+    set demanda-mw (demanda-base * mult * participacion * escala)
+    ifelse pot-instalada > 0 [
+      set carga-pct (demanda-mw / (pot-instalada / 1000)) * 100 ;valor en unidades MVA
+    ] [
+      set carga-pct 0
+    ]
+
+    ; Semaforo visual
+    (ifelse
+      carga-pct >= 100 [ set color red ]
+      carga-pct >= 80  [ set color yellow ]
+      [ set color green ]
+    )
+  ]
   tick
 end
 
-; Hora simulada en [0, 24), fraccionaria (ej. 14.25).
-to-report hora-sim
-  report ((ticks * cfg-minutos-por-tick) / 60) mod 24
-end
-
-; Dia simulado (1, 2, 3, ...).
-to-report dia-sim
-  report 1 + floor ((ticks * cfg-minutos-por-tick) / 1440)
-end
-
-; Temperatura sintetica: minimo 03:00, maximo 15:00. Protege contra min > max.
-to-report temperatura-sim
-  report temperatura-diaria-sintetica hora-sim temp-min (max (list temp-min temp-max))
-end
-
-; Factor de carga maximo entre las AT/MT (para monitor).
-to-report carga-maxima-pct
-  report 100 * max [factor-carga] of mt-subs
+to-report multiplicador-temp [ T ]
+  let c1 max (list 0 (min (list (T - 22) 8.5)))   ; tramo 22 - 30.5 C
+  let c2 max (list 0 (T - 30.5))                  ; tramo sobre 30.5 C
+  report exp (0.01132 * c1 + 0.04338 * c2)
 end]]></code>
   <widgets>
-    <view x="645" wrappingAllowedX="false" y="45" frameRate="30.0" minPycor="-150" height="606" showTickCounter="true" patchSize="2.0" fontSize="10" wrappingAllowedY="false" width="606" tickCounterLabel="ticks" maxPycor="150" updateMode="0" maxPxcor="150" minPxcor="-150"></view>
-    <slider x="165" step="0.05" y="250" max="1.0" width="250" display="escala" height="50" min="0.3" direction="Horizontal" default="0.55" variable="escala"></slider>
-    <slider x="160" step="0.5" y="315" max="45" width="250" display="temperatura" height="50" min="15" direction="Horizontal" default="45.0" variable="temperatura" units="°C"></slider>
-    <button x="265" y="175" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="55">go</button>
-    <button x="250" y="95" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="90">setup-ciudad</button>
->>>>>>> Stashed changes:TrabajoFinal/Archivo Principal/laplata_at.nlogox
+    <view x="180" wrappingAllowedX="false" y="0" frameRate="30.0" minPycor="-150" height="606" showTickCounter="true" patchSize="2.0" fontSize="10" wrappingAllowedY="false" width="606" tickCounterLabel="ticks" maxPycor="150" updateMode="0" maxPxcor="150" minPxcor="-150"></view>
+    <button x="85" y="55" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="90">setup-ciudad</button>
+    <button x="90" y="120" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="55">go</button>
+    <slider x="25" step="0.5" y="315" max="45" width="250" display="temperatura" height="50" min="15" direction="Horizontal" default="36.5" variable="temperatura" units="°C"></slider>
+    <slider x="25" step="0.05" y="250" max="1.0" width="250" display="escala" height="50" min="0.3" direction="Horizontal" default="0.65" variable="escala"></slider>
   </widgets>
   <info>## WHAT IS IT?
 
