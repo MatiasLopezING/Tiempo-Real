@@ -201,9 +201,14 @@ to actualizar-demanda-nodo [ hora finde? T ]
 
     let carga-bruta demanda-base-mw + demanda-aa-mw
 
-    ; Pico transitorio de reconexion (cold load pickup) tras volver de un corte
+    ; Pico transitorio de reconexion (cold load pickup) tras volver de un corte.
+    ; Se lo limita por debajo del disparo instantaneo: sin ese tope, un nodo que
+    ; vuelve con 120 % de carga pasa a 144 % con el rebote, se corta en el mismo
+    ; tick y queda oscilando entre corte y reposicion.
     if ticks-post-reconexion > 0 [
-      set carga-bruta carga-bruta * cfg-factor-rebote
+      set carga-bruta (carga-bruta * cfg-factor-rebote)
+      let techo (cfg-umbral-corte-inmediato - 0.01) * capacidad-efectiva-mw
+      if techo > 0 [ set carga-bruta min (list carga-bruta techo) ]
       set ticks-post-reconexion ticks-post-reconexion - 1
     ]
 
@@ -349,12 +354,18 @@ end
 ; 5. UTILIDADES DE ESCENARIO DE TEMPERATURA Y METRICAS GLOBALES
 ; ============================================================================
 
-; Genera un perfil termico diario suave (minimo a las 03:00, maximo a las 15:00).
-; Nota: en NetLogo `cos` recibe grados.
+; Perfil termico diario. Las horas no son un supuesto: en los 90 dias de datos
+; el minimo cae a las 6 (moda de 30 dias) y el maximo a las 14 (moda de 47), o
+; sea separados por 8 h y no por 12, asi que un coseno simetrico no los puede
+; representar. Se usa la forma media medida, normalizada entre 0 y 1.
+; El coseno dejaba la tarde caliente de mas: a las 19 h se iba 3,3 C por encima.
 to-report temperatura-diaria-sintetica [ hora t-min t-max ]
-  let t-media (t-min + t-max) / 2
-  let amplitud (t-max - t-min) / 2
-  report t-media + amplitud * cos (15 * (hora - 15))
+  let forma [
+              0.188 0.154 0.119 0.083 0.046 0.014 0.000 0.083
+              0.266 0.473 0.670 0.825 0.921 0.976 1.000 0.988
+              0.933 0.824 0.632 0.458 0.365 0.302 0.245 0.200 ]
+  let h ((floor hora) mod 24)
+  report t-min + (t-max - t-min) * (item h forma)
 end
 
 ; Carga la serie de temperaturas (cada 5 min) de una fecha puntual (ej. "2026-02-03")

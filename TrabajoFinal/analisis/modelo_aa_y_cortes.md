@@ -217,3 +217,115 @@ Si posteriormente se agrega un breed `trafos-bt` dentro del casco urbano (cada u
    ```
 
 De este modo, la lógica de temperatura, aires acondicionados, estrés térmico, cortes y restablecimiento se reutiliza sin duplicar ni reescribir código.
+
+---
+
+## Valor de `escala` y jerarquia AT/AT (integracion del modelo)
+
+### Que es `escala`
+
+La demanda que publica CAMMESA es de **toda la concesion de EDELAP**: La Plata,
+Berisso, Ensenada, Magdalena y Punta Indio. El modelo solo representa las **6
+subestaciones AT/MT** que publica el SIG de la Secretaria de Energia, con
+196.972 clientes. `escala` es la fraccion de esa demanda regional que se le
+asigna a la red modelada.
+
+No cambia la cantidad de clientes, ni la capacidad de las subestaciones, ni la
+temperatura. Solo reparte: escala toda la carga de forma lineal.
+
+### Valor adoptado: 0,50
+
+Hay dos anclas posibles y miden cosas distintas:
+
+| Ancla | Cuenta | Valor | Que es |
+|---|---|---|---|
+| Clientes | 196.972 / ~400.000 | **0,49** | estimacion |
+| Capacidad | 382,5 MW / 625 MW | 0,61 | techo, no estimacion |
+
+La primera es una estimacion de la porcion de demanda que corresponde a esos
+clientes. EDELAP declara unos 400.000 usuarios en toda la concesion
+(El Dia, agosto de 2026).
+
+La segunda no estima nada: dice que por encima de 0,61 las 6 subestaciones
+quedan sobrecargadas si o si en el pico, porque su potencia instalada
+(402,7 MVA, o 382,5 MW a factor de potencia 0,95) no alcanza para mas.
+
+Se adopta **0,50**, que es el ancla de clientes redondeada al paso del slider.
+Es el unico valor atado a una cantidad medida. El rango **0,50 - 0,61** queda
+como banda de sensibilidad y los resultados conviene presentarlos como banda.
+
+### Que da con ese valor
+
+Corriendo el 03/02/2026, el dia mas caluroso del periodo (37,8 C a las 15 h):
+
+| escala | delta T | MT095 max | Cortes |
+|---|---|---|---|
+| 0,50 | 0 | 92,7 % | ninguno |
+| 0,50 | +3 C | 124,0 % | 3 cortes de MT095 |
+| 0,55 | 0 | 119,7 % | 1 corte de MT095 |
+| 0,61 | 0 | 124,0 % | 5 cortes de MT095 |
+| 0,61 | +3 C | 124,0 % | 6 de MT095, 3 de MT093 |
+
+Con el valor adoptado el resultado es claro y es el que pide el objetivo 3:
+**hoy la red aguanta el peor dia del verano, y con +3 C deja de aguantar.**
+
+### El orden de caida es fijo
+
+La demanda se reparte proporcional a `clientes`, asi que el factor de carga de
+cada nodo es `clientes_i / pot_i` multiplicado por un mismo numero. Ese cociente
+no cambia con la temperatura, ni con la hora, ni con `escala`:
+
+| | clientes/kVA | % del estres de MT095 |
+|---|---|---|
+| MT095 | 0,631 | 100 % |
+| MT093 | 0,540 | 86 % |
+| MT099 | 0,447 | 71 % |
+| MT195 | 0,340 | 54 % |
+| MT194 | 0,325 | 52 % |
+| MT092 | 0,286 | 45 % |
+
+MT092 necesitaria `escala` 1,19 o 51,7 C para llegar al 100 %. Es decir que con
+este reparto **tres de los seis nodos no pueden caerse**. No es un error del
+modelo: refleja que MT095 tiene 1,59 kVA por cliente (zona residencial densa) y
+MT092 tiene 3,49 (zona con mas industria), y el golpe de los aires pega donde
+hay hogares. Pero hay que presentarlo como un resultado y no como una
+simulacion cuyo ranking se decide antes de apretar `go`.
+
+### Jerarquia AT/AT
+
+Las 9 subestaciones AT/AT del shapefile no traen clientes ni potencia: la capa
+oficial solo publica su ubicacion. Se las modela como **agregadoras**: cada
+AT/MT cuelga de la AT/AT que se alcanza con menos saltos recorriendo las lineas
+reales de la red (busqueda en anchura sobre `power-lines`), y la capacidad del
+padre se estima como la suma de la de sus hijos. Es una hipotesis y hay que
+declararla.
+
+El resultado de recorrer el grafo:
+
+| AT/AT | Hijos | Clientes |
+|---|---|---|
+| AT28000007 | MT095, MT194, MT195 | 86.025 |
+| AT28000004 | MT093 | 55.018 |
+| AT28000016 | MT099 | 38.441 |
+| AT28000010 | MT092 | 17.488 |
+| otras 5 | ninguno | 0 |
+
+Consecuencia a tener presente: con capacidad igual a la suma de los hijos, el
+padre siempre esta menos cargado que su hijo mas exigido, asi que el hijo se
+corta primero y lo alivia. La cascada esta implementada pero en los escenarios
+probados no se dispara. Donde el padre tiene un solo hijo, padre e hijo son
+equivalentes y caen juntos.
+
+### Dos correcciones al modulo
+
+1. **Pico de reconexion.** El rebote de 1,20 se aplicaba sin tope: un nodo que
+   volvia con 120 % de carga pasaba a 144 %, superaba el disparo instantaneo de
+   125 % y se cortaba otra vez en el mismo tick, quedando en bucle. Ahora el
+   rebote se limita por debajo del umbral de disparo.
+
+2. **Perfil termico diario.** El coseno simetrico ponia el minimo a las 3 y el
+   maximo a las 15. En los 90 dias de datos el minimo cae a las **6** (moda de
+   30 dias) y el maximo a las **14** (moda de 47), separados por 8 horas y no
+   por 12, asi que ningun coseno los puede representar. Dejaba la tarde
+   caliente de mas: 3,3 C por encima a las 19 h, justo donde la demanda base
+   hace pico. Se reemplazo por la forma media medida, normalizada entre 0 y 1.

@@ -1,18 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <model version="NetLogo 7.0.4" snapToGrid="true">
   <code><![CDATA[extensions [csv nw]
+__includes [ "reglas_energia.nls" ]
 
-breed [at-subs at-sub]          ; subestaciones AT/AT
-breed [mt-subs mt-sub]          ; subestaciones AT/MT (tienen demanda)
+breed [at-subs at-sub]          ; subestaciones AT/AT (transmision, sin clientes propios)
+breed [mt-subs mt-sub]          ; subestaciones AT/MT (tienen clientes y potencia)
 breed [junctions junction]      ; empalmes y derivaciones
 breed [boundaries boundary]     ; extremos libres: frontera del dato
 undirected-link-breed [power-lines power-line]
 
-turtles-own [nid node-name utm-x utm-y]
-mt-subs-own [clientes pot-instalada acceso participacion demanda-mw carga-pct]
+; reglas_energia.nls exige que todo "nodo de carga" declare estas variables.
+; Van en turtles-own porque las usan las AT/MT y tambien las AT/AT agregadas.
+turtles-own [
+  nid node-name utm-x utm-y
+  clientes pot-instalada
+  estado demanda-base-mw demanda-aa-mw carga-actual-mw aa-encendidos
+  factor-carga estres-termico timer-reposicion ticks-post-reconexion cant-cortes
+]
+mt-subs-own [ acceso padre ]
+at-subs-own [ hijos ]
 power-lines-own [length-m n-spans voltage-kv tipo circuits]
 
-globals [metros-por-patch]
+globals [ metros-por-patch serie-temp dia-finde? ]
+
+; Sliders de la interfaz (se crean como widgets, no se declaran aca):
+;   escala             0.40 - 0.70  paso 0.01  valor 0.50
+;   temperatura        15 - 45      paso 0.5   valor 36.5   (modo manual)
+;   delta-temperatura  -2 - 6       paso 0.5   valor 0      (escenarios a futuro)
+;   aa-por-cliente     0.3 - 1.5    paso 0.05  valor 0.90
 
 to setup-ciudad
   cargar-red "ciudad"
@@ -31,34 +46,22 @@ to cargar-red [modo]
   let fondo (word "basemap_" modo ".png")
   ifelse file-exists? fondo
     [ import-drawing fondo ]
-    [ print (word "(sin mapa de fondo: no se encontró " fondo ")") ]
+    [ print (word "(sin mapa de fondo: no se encontro " fondo ")") ]
   let filas-nodos but-first csv:from-file "nodes_netlogo.csv"
   let filas-enlaces but-first csv:from-file "edges_netlogo.csv"
   crear-nodos filas-nodos
-  calcular-participacion
   ubicar-nodos modo
   crear-enlaces filas-enlaces
+  asignar-padres
+  init-reglas-energia "../analisis/data/perfil_base_horario.csv" mt-subs
+  preparar-at-subs
+  sincronizar-sliders
+  set serie-temp []
+  set dia-finde? false
   estilizar
   resumen
   reset-ticks
-end
-
-to estilizar
-  ask at-subs [
-    set shape "square" set color red set size 6
-    set label node-name set label-color black
-  ]
-  ask mt-subs [
-    set shape "triangle" set color orange
-    set size (5 + clientes / 10000)
-    set label node-name set label-color black
-  ]
-  ask junctions [ set shape "circle" set color green - 1 set size 2 ]
-  ask boundaries [ set shape "x" set color gray set size 4 ]
-  ask power-lines [
-    ifelse voltage-kv >= 220 [ set color magenta ] [ set color blue ]
-    if circuits > 1 [ set thickness 0.4 ]
-  ]
+  etiquetar
 end
 
 ; columnas nodes_netlogo.csv: 0 nid, 1 x, 2 y, 3 lon, 4 lat, 5 kind, 6 degree,
@@ -86,6 +89,7 @@ to crear-nodos [filas]
       ])
   ]
 end
+
 to iniciar-nodo [f]
   set nid item 0 f
   set utm-x item 1 f
@@ -107,7 +111,7 @@ to ubicar-nodos [modo]
   set ymin ymin - margen
   set ymax ymax + margen
   let lado max (list (xmax - xmin) (ymax - ymin))
-  let esc (2 * max-pxcor + 1) / lado      ; patches por metro; el mundo mide 2*max-pxcor+1
+  let esc (2 * max-pxcor + 1) / lado      ; patches por metro
   let xc (xmin + xmax) / 2
   let yc (ymin + ymax) / 2
   set metros-por-patch 1 / esc
@@ -123,7 +127,7 @@ end
 ; columnas edges_netlogo.csv: 0 from_nid, 1 to_nid, 2 length_m, 3 n_spans,
 ;                             4 voltage_kv, 5 tipo
 ; NetLogo no admite dos enlaces no dirigidos iguales entre el mismo par:
-; las líneas paralelas se fusionan y se cuentan en "circuits".
+; las lineas paralelas se fusionan y se cuentan en "circuits".
 to crear-enlaces [filas]
   foreach filas [ f ->
     let a one-of turtles with [nid = item 0 f]
@@ -148,65 +152,166 @@ to crear-enlaces [filas]
   ]
 end
 
+; ---------------------------------------------------------------------------
+; Jerarquia: de que AT/AT cuelga cada AT/MT
+; ---------------------------------------------------------------------------
+; Busqueda en anchura sobre las lineas reales de la red. La AT/AT que se
+; alcanza con menos saltos es la que alimenta a esa AT/MT. Si hay empate,
+; gana la mas proxima en distancia.
+to asignar-padres
+  ask mt-subs [ set padre nobody ]
+  ask at-subs [ set hijos no-turtles ]
+  ask mt-subs [
+    let vistos (turtle-set self)
+    let frente (turtle-set self)
+    let encontrado nobody
+    let saltos 0
+    while [ (encontrado = nobody) and (any? frente) and (saltos < 60) ] [
+      let vecinos ((turtle-set [link-neighbors] of frente) with [ not member? self vistos ])
+      set vistos (turtle-set vistos vecinos)
+      let candidatos (vecinos with [ breed = at-subs ])
+      ifelse any? candidatos
+        [ set encontrado min-one-of candidatos [ distance myself ] ]
+        [ set frente vecinos ]
+      set saltos saltos + 1
+    ]
+    set padre encontrado
+  ]
+  ask at-subs [ set hijos (mt-subs with [ padre = myself ]) ]
+end
 
+; Las AT/AT del shapefile no traen clientes ni potencia: la capa oficial solo
+; publica su ubicacion. Se las modela como agregadoras: su carga es la suma de
+; la de los nodos que alimentan y su capacidad, la suma de la de sus hijos.
+; Es una hipotesis del modelo y hay que declararla.
+to preparar-at-subs
+  ask at-subs [
+    ifelse any? hijos [
+      set clientes sum [ clientes ] of hijos
+      set pot-instalada sum [ pot-instalada ] of hijos
+    ] [
+      set clientes 0
+      set pot-instalada 0
+    ]
+    iniciar-nodo-carga
+  ]
+end
+
+to sincronizar-sliders
+  set cfg-escala-red escala
+  set cfg-eq-aa-por-cliente aa-por-cliente
+end
+
+; ---------------------------------------------------------------------------
+; Ejecucion
+; ---------------------------------------------------------------------------
+to go
+  if not any? mt-subs [ print "Corre primero setup-ciudad." stop ]
+  sincronizar-sliders
+
+  let hora ((floor (ticks * cfg-minutos-por-tick / 60)) mod 24)
+  let T temperatura-ahora
+
+  step-red-simple mt-subs hora dia-finde? T
+  ask at-subs with [ any? hijos ] [ actualizar-subestacion-agregada hijos ]
+
+  etiquetar
+  if (ticks mod (60 / cfg-minutos-por-tick)) = 0 [ informe-hora hora T ]
+  tick
+end
+
+to-report temperatura-ahora
+  ifelse empty? serie-temp
+    [ report temperatura + delta-temperatura ]
+    [ report (item (ticks mod (length serie-temp)) serie-temp) + delta-temperatura ]
+end
+
+; Carga la serie real de 5 minutos del dia mas caluroso del periodo.
+; El 03/02/2026 llego a 37,8 C a las 15 h y cayo martes, o sea dia habil.
+to usar-dia-real
+  set serie-temp cargar-temperaturas-dia "../analisis/data/demanda_la_plata_2026_con_temperatura.csv" "2026-02-03"
+  set dia-finde? false
+  ifelse empty? serie-temp
+    [ print "No se pudo leer la serie; sigue mandando el slider." ]
+    [ print (word "Dia real 03/02/2026 cargado: " length serie-temp " muestras de 5 min.") ]
+  reset-ticks
+end
+
+to usar-temperatura-manual
+  set serie-temp []
+  print "Temperatura tomada del slider."
+  reset-ticks
+end
+
+to etiquetar
+  ask mt-subs [
+    set label (word node-name "  " (round (100 * factor-carga)) "%")
+  ]
+  ask at-subs [
+    ifelse any? hijos
+      [ set label (word node-name "  " (round (100 * factor-carga)) "%") ]
+      [ set label node-name ]
+  ]
+end
+
+to informe-hora [ hora T ]
+  print (word
+    "h=" hora
+    "  T=" (precision T 1) " C"
+    "  demanda=" (precision (demanda-total-mw mt-subs) 1) " MW"
+    "  AA=" (aa-encendidos-total mt-subs)
+    "  sin luz=" (clientes-sin-luz mt-subs)
+    "  cortes=" (cortes-acumulados mt-subs))
+end
+
+; ---------------------------------------------------------------------------
+to estilizar
+  ask at-subs [
+    set shape "square"
+    set size 6
+    ifelse any? hijos [ set color green ] [ set color gray ]
+    set label-color black
+  ]
+  ask mt-subs [
+    set shape "triangle"
+    set color green
+    set size (5 + clientes / 10000)
+    set label-color black
+  ]
+  ask junctions [ set shape "circle" set color green - 1 set size 2 ]
+  ask boundaries [ set shape "x" set color gray set size 4 ]
+  ask power-lines [
+    ifelse voltage-kv >= 220 [ set color magenta ] [ set color blue ]
+    if circuits > 1 [ set thickness 0.4 ]
+  ]
+end
 
 to resumen
   print "--- red cargada ---"
   print (word "nodos: " count turtles ", enlaces: " count links)
   print (word "AT/AT: " count at-subs ", AT/MT: " count mt-subs ", empalmes: " count junctions ", fronteras: " count boundaries)
   print (word "clientes totales (AT/MT): " sum [clientes] of mt-subs)
-  print (word "enlaces con circuitos paralelos: " count power-lines with [circuits > 1])
   nw:set-context turtles power-lines
   let comps nw:weak-component-clusters
-  print (word "componentes conexas: " length comps " | tamaños: " sort map [c -> count c] comps)
-end
-
-
-to calcular-participacion
-  let total-clientes sum [clientes] of mt-subs
-  if total-clientes > 0 [
-    ask mt-subs [
-      set participacion (clientes / total-clientes)
-    ]
-  ]
-end
-
-to go
-  let hora (ticks mod 24)
-  ; Perfil base horario (0 a 23 hs) para dias habiles sacado del analisis de datos
-  let perfil-habil [343 317 299 291 287 289 303 310 327 345 360 365 368 369 367 364 363 367 377 407 434 431 405 376]
-  let demanda-base item hora perfil-habil
-  let mult multiplicador-temp temperatura
-
+  print (word "componentes conexas: " length comps " | tamanos: " sort map [c -> count c] comps)
+  print "--- de que AT/AT cuelga cada AT/MT ---"
   ask mt-subs [
-    set demanda-mw (demanda-base * mult * participacion * escala)
-    ifelse pot-instalada > 0 [
-      set carga-pct (demanda-mw / (pot-instalada / 1000)) * 100 ;valor en unidades MVA
-    ] [
-      set carga-pct 0
-    ]
-
-    ; Semaforo visual
-    (ifelse
-      carga-pct >= 100 [ set color red ]
-      carga-pct >= 80  [ set color yellow ]
-      [ set color green ]
-    )
+    ifelse padre = nobody
+      [ print (word "  " node-name " -> sin padre alcanzable por la red") ]
+      [ print (word "  " node-name " (" clientes " clientes) -> " [node-name] of padre) ]
   ]
-  tick
-end
-
-to-report multiplicador-temp [ T ]
-  let c1 max (list 0 (min (list (T - 22) 8.5)))   ; tramo 22 - 30.5 C
-  let c2 max (list 0 (T - 30.5))                  ; tramo sobre 30.5 C
-  report exp (0.01132 * c1 + 0.04338 * c2)
+  print (word "AT/AT que alimentan algo: " count at-subs with [any? hijos] " de " count at-subs)
 end]]></code>
   <widgets>
     <view x="180" wrappingAllowedX="false" y="0" frameRate="30.0" minPycor="-150" height="606" showTickCounter="true" patchSize="2.0" fontSize="10" wrappingAllowedY="false" width="606" tickCounterLabel="ticks" maxPycor="150" updateMode="0" maxPxcor="150" minPxcor="-150"></view>
-    <button x="85" y="55" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="90">setup-ciudad</button>
-    <button x="90" y="120" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="55">go</button>
-    <slider x="25" step="0.5" y="315" max="45" width="250" display="temperatura" height="50" min="15" direction="Horizontal" default="36.5" variable="temperatura" units="°C"></slider>
-    <slider x="25" step="0.05" y="250" max="1.0" width="250" display="escala" height="50" min="0.3" direction="Horizontal" default="0.65" variable="escala"></slider>
+    <button x="10" y="10" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="160">setup-ciudad</button>
+    <button x="10" y="55" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="160">go</button>
+    <button x="10" y="100" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="160">usar-dia-real</button>
+    <button x="10" y="145" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="160">usar-temperatura-manual</button>
+    <slider x="10" step="0.01" y="200" max="0.7" width="160" display="escala" height="50" min="0.4" direction="Horizontal" default="0.5" variable="escala"></slider>
+    <slider x="10" step="0.5" y="255" max="45" width="160" display="temperatura" height="50" min="15" direction="Horizontal" default="36.5" variable="temperatura" units="C"></slider>
+    <slider x="10" step="0.5" y="310" max="6" width="160" display="delta-temperatura" height="50" min="-2" direction="Horizontal" default="0.0" variable="delta-temperatura" units="C"></slider>
+    <slider x="10" step="0.05" y="365" max="1.5" width="160" display="aa-por-cliente" height="50" min="0.3" direction="Horizontal" default="0.9" variable="aa-por-cliente"></slider>
   </widgets>
   <info>## WHAT IS IT?
 
