@@ -47,7 +47,6 @@ TrabajoFinal/Archivo Principal/laplata_at.nlogox
 | `Datasets/` | Scripts de descarga de CAMMESA y los datos crudos |
 | `test/` | Shapefiles del SIG y los scripts que generan el grafo |
 | `presentacion-avance/` | Presentación de avance y su guion |
-| `wiki/` | Fuente de las páginas de la wiki ([cómo publicarlas](wiki/README.md)) |
 
 ### Fuentes de datos
 
@@ -94,8 +93,29 @@ TP1-Interrupciones/      práctica 1
 TP2-FreeRTOS/            práctica 2
 TP3-Planificacion/       práctica 3, con informes y guías por ejercicio
 TrabajoFinal/            el proyecto de simulación
-wiki/                    fuente de la wiki de GitHub
 ```
+
+## Editar la wiki
+
+Las páginas de la [wiki](https://github.com/MatiasLopezING/Tiempo-Real/wiki)
+viven en un repositorio aparte de GitHub. Para editarlas hay que clonarlo:
+
+```bash
+git clone https://github.com/MatiasLopezING/Tiempo-Real.wiki.git
+```
+
+Se puede clonar dentro de esta misma carpeta: `Tiempo-Real.wiki/` está en el
+`.gitignore`, así que el repo del proyecto lo ignora. Después se edita, se
+commitea y se pushea ahí como en cualquier repo; su rama se llama `master`.
+
+| Archivo | Página |
+|---|---|
+| `Home.md` | Inicio, resumen y estado |
+| `_Sidebar.md` | Navegación lateral |
+| `1-Problema-y-objetivos.md` … `7-Como-correrlo.md` | Las siete páginas de contenido |
+
+El nombre del archivo es el nombre de la página y su URL, y los enlaces
+internos van sin extensión: `[texto](2-Datos-y-limpieza)`.
 
 ## Trabajar sobre el modelo de NetLogo
 
