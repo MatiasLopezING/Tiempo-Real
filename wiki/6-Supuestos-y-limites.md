@@ -87,10 +87,15 @@ minutos, la temperatura es la misma durante 12 ticks. No es un problema —la
 demanda térmica no cambia en 5 minutos— pero conviene saberlo al leer los
 gráficos.
 
-## 7 · La fuente de la temperatura no está documentada
+## 7 · La temperatura es un dato modelado, no medido
 
-Ver [2 · Datos y limpieza](2-Datos-y-limpieza). Es lo primero a cerrar antes
-de la entrega final.
+Viene del NSRDB, y ahí la temperatura se toma del reanálisis MERRA-2 de la
+NASA: un modelo que reconstruye el estado de la atmósfera sobre una grilla. Es
+consistente y sin huecos, pero no es la medición de una estación local.
+
+Falta registrar qué producto del NSRDB se usó y con qué coordenadas, y corregir
+la presentación inicial, que atribuye la temperatura al Servicio Meteorológico
+Nacional. Ver [2 · Datos y limpieza](2-Datos-y-limpieza).
 
 ## 8 · La demanda incluye todo
 

@@ -59,6 +59,6 @@ nodo, fechas críticas y mapa de vulnerabilidad). Ver
 
 | Qué | Dónde |
 |---|---|
-| Demanda eléctrica, 5 min | API de CAMMESA, `id_region` 1943 (EDELAP) |
+| Demanda eléctrica, cada 5 min | API de CAMMESA, `id_region` 1943 (EDELAP) |
+| Temperatura del aire, horaria | NSRDB (NREL), derivada del reanálisis MERRA-2 |
 | Subestaciones y líneas | [sig.energia.gob.ar](https://sig.energia.gob.ar/v/) — Secretaría de Energía |
-| Temperatura, horaria | Sin documentar. Ver [2 · Datos y limpieza](2-Datos-y-limpieza) |

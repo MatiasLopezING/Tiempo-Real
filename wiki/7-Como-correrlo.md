@@ -71,8 +71,9 @@ python "script La Plata.py"
 Cachea un JSON por día en `data/laplata_raw/`, así que una segunda corrida no
 vuelve a pegarle a la API.
 
-> La columna de temperatura **no la produce ese script**. Ver
-> [2 · Datos y limpieza](2-Datos-y-limpieza).
+> La columna de temperatura **no la produce ese script**: sale de cruzar la
+> serie de CAMMESA con datos del NSRDB. El script del cruce no está en el repo.
+> Ver [2 · Datos y limpieza](2-Datos-y-limpieza).
 
 ---
 

@@ -54,6 +54,7 @@ TrabajoFinal/Archivo Principal/laplata_at.nlogox
 | Qué | Dónde |
 |---|---|
 | Demanda eléctrica, cada 5 min | API de CAMMESA, `id_region` 1943 (EDELAP) |
+| Temperatura del aire, horaria | NSRDB (NREL), derivada del reanálisis MERRA-2 |
 | Subestaciones y líneas de alta tensión | [sig.energia.gob.ar](https://sig.energia.gob.ar/v/) |
 
 ---

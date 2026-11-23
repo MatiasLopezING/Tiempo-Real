@@ -19,18 +19,54 @@ respetado en las 25.919 diferencias.
 
 ## De dónde sale la temperatura
 
-El archivo `demanda_la_plata_2026_con_temperatura.csv` es el crudo de CAMMESA
-más una columna `temperatura_c`. Se verificó que la demanda es **idéntica**
-fila por fila: el merge solo agregó temperatura.
+La API de CAMMESA devuelve demanda, no temperatura. La columna `temperatura_c`
+se agregó cruzando esa serie con datos del **NSRDB** (*National Solar Radiation
+Database*, del NREL), que publica variables meteorológicas derivadas de
+satélite para las Américas.
 
-La temperatura es **horaria**: un valor por hora repetido en las 12 muestras de
-5 minutos. 2.161 horas, sin un solo hueco, rango 7,3 – 37,8 °C.
+El cruce no tocó la demanda: `demanda_la_plata_2026_con_temperatura.csv` es
+idéntico fila por fila a `laplata_demanda_feb_may_2026.csv` en `fecha` y
+`dem_mw`. El merge solo agregó una columna.
 
-> ⚠️ **El script que la bajó no está.** `Datasets/archivo.py` existe pero está
-> vacío. La presentación inicial dice «Servicio Meteorológico Nacional», pero
-> una serie horaria de 90 días sin un solo faltante no parece una estación
-> meteorológica real. Hay que documentar la fuente y el punto geográfico antes
-> de la entrega final.
+### Las dos series no tienen el mismo paso
+
+| Serie | Fuente | Paso |
+|---|---|---|
+| Demanda | CAMMESA | **5 minutos** |
+| Temperatura | NSRDB | **1 hora** |
+
+En el archivo cruzado la temperatura aparece una vez por hora, repetida en las
+12 muestras de esa hora. Verificado: hay exactamente **un valor distinto por
+hora de reloj** en las 2.161 horas del período, y el valor cambia siempre en el
+minuto 0.
+
+Importa al leer los resultados: la resolución real de la temperatura es
+**horaria**, aunque el archivo tenga una fila cada 5 minutos. Si el modelo
+corre con tick de 5 minutos, la temperatura es la misma durante 12 ticks.
+
+Rango: 7,3 – 37,8 °C.
+
+### Por qué la serie no tiene ni un hueco
+
+2.161 horas sin un solo faltante, lo que no se parece a una estación
+meteorológica. La explicación está en el origen: la temperatura del NSRDB no la
+mide el satélite, se toma del reanálisis **MERRA-2** de la NASA. Un reanálisis
+es un modelo que reconstruye el estado de la atmósfera, así que entrega una
+grilla completa por construcción.
+
+Es un dato consistente y sin huecos, pero **es una estimación modelada, no una
+medición local**. No equivale a la temperatura registrada en el Observatorio de
+La Plata.
+
+> ⚠️ **Dos cosas pendientes de documentar.** El script que bajó y cruzó los
+> datos no está: `Datasets/archivo.py` existe pero está vacío. Y no quedó
+> registrado qué producto del NSRDB se usó ni con qué coordenadas; el NSRDB
+> tiene productos de distinta resolución (el v3 de las Américas es de 4 km y
+> 30 min; hay uno del hemisferio occidental de 2 km y 10 min). Conviene anotar
+> cuál fue antes de la entrega final.
+>
+> Hay además un error a corregir en la presentación inicial, que atribuye la
+> temperatura al **Servicio Meteorológico Nacional**.
 
 ## El dato crudo no se puede usar
 
